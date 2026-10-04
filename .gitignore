@@ -1,0 +1,18 @@
+# Research catalogs
+data/
+
+# All databases
+database/**/*.db
+
+# Images
+images/
+
+# Output
+output/
+
+# Python cache
+***__pycache__/
+*.pyc
+
+# VSCode
+.vscode/
