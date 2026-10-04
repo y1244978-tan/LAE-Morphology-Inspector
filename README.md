@@ -79,21 +79,6 @@ SQLiteによるデータ管理機能を実装しています。
 
 ---
 
-## ディレクトリ構成
-
-```text
-data/
-database/
-docs/
-images/
-output/
-src/
-├─ app.py
-├─ database.py
-├─ import_catalog.py
-
----
-
 ## 開発ログ
 
 Day1からDay12までの設計検討・実装内容・発見事項を記録しています。
@@ -109,3 +94,18 @@ Day1からDay12までの設計検討・実装内容・発見事項を記録し�
 研究で使用する画像・カタログ・データベースは公開していません。
 
 本リポジトリではアプリケーションのソースコードのみを公開しています。
+
+
+
+## ディレクトリ構成
+
+```text
+data/
+database/
+docs/
+images/
+output/
+src/
+├─ app.py
+├─ database.py
+├─ import_catalog.py
