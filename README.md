@@ -1,14 +1,32 @@
 # LAE Morphology Inspector Ver2
 
-LAE・SF・Q銀河の形態判定および研究解析を支援するためのアプリケーションです。
+修士研究で実施している銀河形態解析を支援するために開発したアプリケーションです。
 
-修士研究で実施している
+JWST観測データを用いた
 
-- LAE (Lyα Emitter)
-- SF (Star Forming Galaxy)
-- Q (Quiescent Galaxy)
+- LAE（Lyα Emitter）
+- SF（Star Forming Galaxy）
+- Q（Quiescent Galaxy）
 
-の形態比較研究のために開発しました。
+の形態比較研究を対象としており、
+
+- 画像判定
+- SQLサンプリング
+- SQLiteによるデータ管理
+- 統計可視化
+
+を統合的に行うことができます。
+
+---
+
+## 使用技術
+
+- Python
+- Streamlit
+- SQLite
+- Pandas
+- NumPy
+- Matplotlib
 
 ---
 
