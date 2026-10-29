@@ -1,9 +1,63 @@
 import streamlit as st
+
+#キャッシュ
+@st.cache_data
+def load_catalog(path):
+
+    return pd.read_csv(
+        path,
+        sep=r"\s+",
+        encoding="cp932"
+    )
+
+@st.cache_data
+def load_prediction(target):
+
+    if target == "LAE":
+
+        file = "data/prediction.csv"
+
+    elif target == "SF":
+
+        file = "data/prediction_SF.csv"
+
+    else:
+
+        file = "data/prediction_Q.csv"
+
+    return pd.read_csv(file)
+
+@st.cache_data
+def load_uncertain(target):
+
+    if target == "LAE":
+
+        file = "data/uncertain.csv"
+
+    elif target == "SF":
+
+        file = "data/uncertain_SF.csv"
+
+    else:
+
+        file = "data/uncertain_Q.csv"
+
+    return pd.read_csv(file)
+
+@st.cache_data
+def get_fits_files(folder):
+
+    return glob.glob(
+        folder + r"\**\*.fits",
+        recursive=True
+    )
+
 import pandas as pd
 import glob
 import re
 from astropy.io import fits
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 import numpy as np
 from database import (
     get_history,
@@ -12,11 +66,81 @@ from database import (
     get_classified_ids,
     get_lae_by_ew,
     get_sample_statistics,
-    get_sampled_galaxies
+    get_sampled_galaxies,
+    get_sample_counts,
+    get_classified_objects
 )
 
 # タイトル
 st.title("LAE Morphology Inspector")
+
+prediction_target = st.sidebar.radio(
+    "推論結果",
+    [
+        "LAE",
+        "SF",
+        "Q"
+    ]
+)
+
+uncertain_df = load_uncertain(
+    prediction_target
+)
+
+prediction_df = load_prediction(
+    prediction_target
+)
+
+# ------------------------
+# Display Mode
+# ------------------------
+
+st.sidebar.markdown("---")
+
+st.sidebar.subheader(
+    "表示モード"
+)
+
+view_mode = st.sidebar.radio(
+    "",
+    [
+        "🟦 未判定",
+        "🟨 判定済み",
+        "🟥 Uncertain"
+    ]
+)
+
+st.sidebar.metric(
+    f"{prediction_target} Uncertain",
+    len(uncertain_df)
+)
+
+
+st.sidebar.markdown("---")
+
+
+# ------------------------
+# Main Mode Banner
+# ------------------------
+
+if view_mode == "🟦 未判定":
+
+    st.info(
+        "🟦 未判定天体表示モード"
+    )
+
+elif view_mode == "🟨 判定済み":
+
+    st.warning(
+        "🟨 判定済み天体表示モード"
+    )
+
+elif view_mode == "🟥 Uncertain":
+
+    st.error(
+        "🟥 AIが迷った天体（Uncertain）表示モード"
+    )
+
 
 # -----------------------------
 # Session State 初期化
@@ -29,83 +153,85 @@ if "saved" not in st.session_state:
     st.session_state.saved = False
 
 
-# 現在モード表示
-if "selected_saved_id" in st.session_state:
-
-    st.warning(
-        "🟨 判定済み天体表示モード"
-    )
-
-else:
-
-    st.info(
-        "🟦 未判定天体表示モード"
-    )
 
 #----------------
 # サイドバー
 #----------------
+
 st.sidebar.subheader(
     "判定済み天体"
 )
 
 classified_ids = get_classified_ids()
 
-selected_id = st.sidebar.selectbox(
-    "保存済みID",
-    classified_ids
+st.sidebar.write(
+    f"保存済み件数 : {len(classified_ids)}"
 )
 
-# 判定済み天体表示
-if st.sidebar.button("保存済み天体を表示"):
+sample_counts = get_sample_counts()
 
-    st.session_state.selected_saved_id = (
-        selected_id
+st.sidebar.markdown(
+    "### サンプル別件数"
+)
+
+for _, row in sample_counts.iterrows():
+
+    st.sidebar.write(
+        f"{row['image_subset']} : {row['n']}"
     )
 
-    st.session_state.show_saved_effect = True
+saved_df = get_classified_objects()
 
-    st.rerun()
+options = {
+    f"{row['image_subset']} | {row['id']}":
+    row["id"]
+    for _, row in saved_df.iterrows()
+}
 
-# 未判定モードへ戻る
-if st.sidebar.button("未判定モードへ戻る"):
+selected_label = st.sidebar.selectbox(
+    "保存済みID",
+    list(options.keys())
+)
 
-    if "selected_saved_id" in st.session_state:
+selected_id = options[selected_label]
 
-        del st.session_state.selected_saved_id
 
-    st.session_state.show_unclassified_effect = True
+# ----------------
+# 判定基準
+# ----------------
 
-    st.rerun()
+st.sidebar.markdown("---")
 
-# 判定済みモードへ切り替えエフェクト
-if st.session_state.get(
-    "show_saved_effect",
-    False
-):
+st.sidebar.subheader(
+    "判定基準"
+)
 
-    st.warning(
-        "🟨 判定済み天体表示モードへ切り替えました"
-    )
+st.sidebar.markdown("""
+### Detectable
+・OBJで有意に検出されている
 
-    st.balloons()
+・OBJで中心に集中している
 
-    st.session_state.show_saved_effect = False
+### Bright Neighbor
+・近傍に独立した明るい天体が存在
 
-# 未判定モードへ戻ったエフェクト
-if st.session_state.get(
-    "show_unclassified_effect",
-    False
-):
+### Multiple Component
+・複数ピークが存在
 
-    st.success(
-        "✅ 未判定モードへ戻りました"
-    )
+### Point Source
+・OBJがほぼ円形
 
-    st.balloons()
+・Bright Neighborなし
 
-    st.session_state.show_unclassified_effect = False
+・Multiple Componentなし
 
+・F277W PSF(FWHM)
+  ≈ 0.12 - 0.13 arcsec
+
+・r50 が
+  0.12 - 0.13 arcsec
+  に近いほど点源候補
+""")
 
 
 
@@ -118,19 +244,7 @@ st.subheader("SQLサンプリング抽出")
 
 #画像選択
 
-image_family = st.selectbox(
-    "画像グループ",
-    [
-        "images",
-        "images_asy",
-        "images_obj"
-    ]
-)
-
-sample_select = st.selectbox(
-    "サンプル",
-    ["LAE", "SF", "Q"]
-)
+sample_select = prediction_target
 
 metric_rank = st.selectbox(
     "指標",
@@ -171,22 +285,21 @@ sampled_df = get_sampled_galaxies(
     low_n=low_n
 )
 
-st.write(
-    "sampled_df件数:",
-    len(sampled_df)
-)
+with st.expander(
+    f"サンプリング結果 ({len(sampled_df)}件)"
+):
 
-st.dataframe(
-    sampled_df[
-        [
-            "id",
-            "logM",
-            "Re",
-            "concentration",
-            "asymmetry"
+    st.dataframe(
+        sampled_df[
+            [
+                "id",
+                "logM",
+                "Re",
+                "concentration",
+                "asymmetry"
+            ]
         ]
-    ]
-)
+    )
 
 if st.button("サンプリング結果を閲覧対象にする"):
 
@@ -238,40 +351,92 @@ elif sample_select == "Q":
         "data/catalog_nonLAE_Q_F277W_with_err_kpc.txt"
     )
 
-st.write(catalog_file)
 
-df = pd.read_csv(
+df = load_catalog(
     catalog_file,
-    sep=r"\s+",
-    encoding="cp932"
+    
 )
 
-# フォルダ選択
-if image_family == "images":
+#pixelカタログ
+if sample_select == "LAE":
 
-    folder_path = (
-        rf"\\wsl.localhost\Ubuntu\home\tan\images_all"
-        rf"\images_all_{sample_select}"
+    pixel_catalog_file = (
+        "data/catalog_LAE_F277W_with_err.txt"
     )
 
-elif image_family == "images_asy":
+elif sample_select == "SF":
 
-    folder_path = (
-        rf"\\wsl.localhost\Ubuntu\home\tan\images_all"
-        rf"\images_asy_all_{sample_select}"
+    pixel_catalog_file = (
+        "data/catalog_nonLAE_SF_F277W_with_err.txt"
     )
 
-elif image_family == "images_obj":
+else:
 
-    folder_path = (
-        rf"\\wsl.localhost\Ubuntu\home\tan\images_all"
-        rf"\images_obj_all_{sample_select}"
+    pixel_catalog_file = (
+        "data/catalog_nonLAE_Q_F277W_with_err.txt"
     )
 
-st.write(folder_path)
+pixel_df = load_catalog(
+    pixel_catalog_file,
+    
+)
+
+
+
+with st.expander("Prediction CSV Check"):
+
+    st.write(prediction_df.head())
+
+    st.write(
+        f"prediction件数: {len(prediction_df)}"
+    )
+
+
+
+
+
+#SF動作用
+for col in [
+    "r20_lsig",
+    "err_r20_lsig",
+    "r50_lsig",
+    "err_r50_lsig",
+    "r80_lsig",
+    "err_r80_lsig"
+]:
+    df[col] = pd.to_numeric(
+        df[col],
+        errors="coerce"
+    )
+
+# --------------------------------
+# 画像フォルダ
+# --------------------------------
+
+base_path = (
+    r"\\wsl.localhost\Ubuntu\home\tan\images_all"
+)
+
+f277w_folder = (
+    rf"{base_path}\images_all_{sample_select}"
+)
+
+obj_folder = (
+    rf"{base_path}\images_obj_all_{sample_select}"
+)
+
+asy_folder = (
+    rf"{base_path}\images_asy_all_{sample_select}"
+)
+
+with st.expander("画像フォルダ情報"):
+
+    st.write("F277W :", f277w_folder)
+    st.write("OBJ   :", obj_folder)
+    st.write("ASY   :", asy_folder)
 
 fits_files = glob.glob(
-    folder_path + r"\**\*.fits",
+    f277w_folder + r"\**\*.fits",
     recursive=True
 )
 
@@ -290,6 +455,21 @@ for file in fits_files:
 # catalogと画像IDを照合
 
 matched_df = df[df["ID"].isin(id_list)]
+
+# SFの異常データを除外
+if sample_select == "SF":
+
+    exclude_ids = [
+        1103622,
+        718922
+    ]
+
+    matched_df = matched_df[
+        ~matched_df["ID"].isin(
+            exclude_ids
+        )
+    ]
+    
 
 if (
     "sampling_ids"
@@ -345,13 +525,35 @@ if "sampling_ids" in st.session_state:
 else:
 
     saved_ids = get_saved_ids(
-        image_family,
+        "all",
         sample_select
     )
 
-    matched_df = matched_df[
-        ~matched_df["ID"].isin(saved_ids)
-    ]
+    if view_mode == "🟦 未判定":
+
+        matched_df = matched_df[
+            ~matched_df["ID"].isin(saved_ids)
+        ]
+
+    elif view_mode == "🟨 判定済み":
+
+        matched_df = matched_df[
+            matched_df["ID"].isin(saved_ids)
+        ]
+
+    elif view_mode == "🟥 Uncertain":
+
+        uncertain_ids = (
+            uncertain_df["id"]
+            .astype(int)
+            .tolist()
+        )
+
+        matched_df = matched_df[
+            matched_df["ID"].isin(
+                uncertain_ids
+            )
+        ]
 
     total_objects = len(
         df[df["ID"].isin(id_list)]
@@ -365,7 +567,6 @@ else:
         total_objects
         - remaining_objects
     )
-    
 
 
 
@@ -421,285 +622,270 @@ st.metric(
     len(matched_df)
 )
 
-#-----------------------
-#EW,A,C,Re,M*ヒストグラム
-#-----------------------
+# -----------------------
+# Statistics
+# -----------------------
 
-#EWヒストグラム(LAEのみ作用/SFとQでは作用せず)
-st.subheader("EW分布")
+with st.expander("📊 サンプル統計"):
 
-fig, ax = plt.subplots()
-
-if sample_select == "LAE":
-
-    ax.hist(
-        matched_df["EW"],
-        bins=20
-    )
-
-ax.set_title("EW Distribution")
-
-ax.set_xlabel("EW")
-ax.set_ylabel("Number")
-
-st.pyplot(fig)
-
-
-#Reヒストグラム
-st.subheader("Re分布")
-
-fig, ax = plt.subplots()
-
-ax.hist(
-    matched_df["Re"],
-    bins=20
-)
-
-ax.set_title(
-    "Re Distribution"
-)
-
-ax.set_xlabel("Re (kpc)")
-ax.set_ylabel("Number")
-
-st.pyplot(fig)
-
-#Cヒストグラム
-st.subheader("C分布")
-
-c_data = matched_df[
-    matched_df["C_1sig/C_n2p5"] < 5
-]["C_1sig/C_n2p5"]
-
-fig, ax = plt.subplots()
-
-ax.hist(
-    c_data,
-    bins=50
-)
-
-ax.set_xlim(0, 3)
-
-ax.set_title("C Distribution")
-
-ax.set_xlabel("Concentration")
-ax.set_ylabel("Number")
-
-st.pyplot(fig)
-
-#Aヒストグラム
-st.subheader("A分布")
-
-a_data = matched_df["A_1sig"]
-
-a_data = a_data.replace(
-    [np.inf, -np.inf],
-    np.nan
-)
-
-a_data = a_data.dropna()
-
-fig, ax = plt.subplots()
-
-ax.hist(
-    a_data,
-    bins=50
-)
-
-ax.set_title(
-    "A Distribution"
-)
-
-ax.set_xlabel("Asymmetry")
-ax.set_ylabel("Number")
-
-st.pyplot(fig)
-
-
-
-#log(M*)ヒストグラム
-
-st.subheader("log(M*)分布")
-
-fig, ax = plt.subplots()
-
-ax.hist(
-    np.log10(matched_df["Ms_med"]),
-    bins=20
-)
-
-ax.set_title("Mass Distribution")
-
-ax.set_xlabel("log(M*)")
-ax.set_ylabel("Number")
-
-st.pyplot(fig)
-
-
-#比較パラメータ
-st.subheader("LAE / SF / Q 比較")
-
-compare_param = st.selectbox(
-    "比較パラメータ",
-    ["Re", "C", "A"]
-)
-
-lae_df = pd.read_csv(
-    "data/catalog_LAE_F277W_with_err_kpc.txt",
-    sep=r"\s+",
-    encoding="cp932"
-)
-
-sf_df = pd.read_csv(
-    "data/catalog_nonLAE_SF_F277W_with_err_kpc.txt",
-    sep=r"\s+",
-    encoding="cp932"
-)
-
-q_df = pd.read_csv(
-    "data/catalog_nonLAE_Q_F277W_with_err_kpc.txt",
-    sep=r"\s+",
-    encoding="cp932"
-)
-
-#Re比較
-if compare_param == "Re":
+    # EW
+    st.subheader("EW分布")
 
     fig, ax = plt.subplots()
 
-    ax.hist(
-        lae_df["Re"],
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="LAE",
-        color="purple"
-    )
+    if sample_select == "LAE":
 
-    ax.hist(
-        sf_df["Re"],
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="SF",
-        color="blue"
-    )
+        ax.hist(
+            matched_df["EW"],
+            bins=20
+        )
 
-    ax.hist(
-        q_df["Re"],
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="Q",
-        color="red"
-    )
-
-    ax.set_xlabel("Re (kpc)")
-    ax.set_ylabel("Density")
-    ax.legend()
+    ax.set_title("EW Distribution")
+    ax.set_xlabel("EW")
+    ax.set_ylabel("Number")
 
     st.pyplot(fig)
 
-#C比較
-elif compare_param == "C":
+    # Re
+    st.subheader("Re分布")
 
     fig, ax = plt.subplots()
 
     ax.hist(
-        lae_df["C_1sig/C_n2p5"],
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="LAE",
-        color="purple"
+        matched_df["Re"],
+        bins=20
     )
 
-    ax.hist(
-        sf_df["C_1sig/C_n2p5"],
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="SF",
-        color="blue"
-    )
+    ax.set_title("Re Distribution")
+    ax.set_xlabel("Re (kpc)")
+    ax.set_ylabel("Number")
+
+    st.pyplot(fig)
+
+    # C
+    st.subheader("C分布")
+
+    c_data = matched_df[
+        matched_df["C_1sig/C_n2p5"] < 5
+    ]["C_1sig/C_n2p5"]
+
+    fig, ax = plt.subplots()
 
     ax.hist(
-        q_df["C_1sig/C_n2p5"],
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="Q",
-        color="red"
+        c_data,
+        bins=50
     )
 
     ax.set_xlim(0, 3)
 
+    ax.set_title("C Distribution")
     ax.set_xlabel("Concentration")
-    ax.set_ylabel("Density")
-    ax.legend()
+    ax.set_ylabel("Number")
 
     st.pyplot(fig)
 
-#A比較
-elif compare_param == "A":
+    # A
+    st.subheader("A分布")
+
+    a_data = matched_df["A_1sig"]
+
+    a_data = a_data.replace(
+        [np.inf, -np.inf],
+        np.nan
+    )
+
+    a_data = a_data.dropna()
 
     fig, ax = plt.subplots()
 
-    lae_a = lae_df["A_1sig"].replace(
-        [np.inf, -np.inf],
-        np.nan
-    ).dropna()
-
-    sf_a = sf_df["A_1sig"].replace(
-        [np.inf, -np.inf],
-        np.nan
-    ).dropna()
-
-    q_a = q_df["A_1sig"].replace(
-        [np.inf, -np.inf],
-        np.nan
-    ).dropna()
-
     ax.hist(
-        lae_a,
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="LAE",
-        color="purple"
+        a_data,
+        bins=50
     )
 
-    ax.hist(
-        sf_a,
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="SF",
-        color="blue"
-    )
-
-    ax.hist(
-        q_a,
-        bins=30,
-        density=True,
-        alpha=0.5,
-        label="Q",
-        color="red"
-    )
-
+    ax.set_title("A Distribution")
     ax.set_xlabel("Asymmetry")
-    ax.set_ylabel("Density")
-    ax.legend()
+    ax.set_ylabel("Number")
 
     st.pyplot(fig)
 
-#Re,A,Cの代表値
-stats_df = get_sample_statistics()
+    # Mass
+    st.subheader("log(M*)分布")
 
-st.subheader("Database Statistics")
+    fig, ax = plt.subplots()
 
-st.dataframe(stats_df)
+    ax.hist(
+        np.log10(
+            matched_df["Ms_med"]
+        ),
+        bins=20
+    )
 
+    ax.set_title("Mass Distribution")
+    ax.set_xlabel("log(M*)")
+    ax.set_ylabel("Number")
+
+    st.pyplot(fig)
+
+
+with st.expander("📈 LAE / SF / Q 比較"):
+
+    compare_param = st.selectbox(
+        "比較パラメータ",
+        ["Re", "C", "A"]
+    )
+
+    lae_df = load_catalog(
+        "data/catalog_LAE_F277W_with_err_kpc.txt"
+    )
+
+    sf_df = load_catalog(
+        "data/catalog_nonLAE_SF_F277W_with_err_kpc.txt"
+    )
+
+    q_df = load_catalog(
+        "data/catalog_nonLAE_Q_F277W_with_err_kpc.txt"
+    )
+
+    if compare_param == "Re":
+
+        fig, ax = plt.subplots()
+
+        ax.hist(
+            lae_df["Re"],
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="LAE",
+            color="purple"
+        )
+
+        ax.hist(
+            sf_df["Re"],
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="SF",
+            color="blue"
+        )
+
+        ax.hist(
+            q_df["Re"],
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="Q",
+            color="red"
+        )
+
+        ax.set_xlabel("Re (kpc)")
+        ax.set_ylabel("Density")
+        ax.legend()
+
+        st.pyplot(fig)
+
+    elif compare_param == "C":
+
+        fig, ax = plt.subplots()
+
+        ax.hist(
+            lae_df["C_1sig/C_n2p5"],
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="LAE",
+            color="purple"
+        )
+
+        ax.hist(
+            sf_df["C_1sig/C_n2p5"],
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="SF",
+            color="blue"
+        )
+
+        ax.hist(
+            q_df["C_1sig/C_n2p5"],
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="Q",
+            color="red"
+        )
+
+        ax.set_xlim(0, 3)
+
+        ax.set_xlabel("Concentration")
+        ax.set_ylabel("Density")
+        ax.legend()
+
+        st.pyplot(fig)
+
+    elif compare_param == "A":
+
+        fig, ax = plt.subplots()
+
+        lae_a = (
+            lae_df["A_1sig"]
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+
+        sf_a = (
+            sf_df["A_1sig"]
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+
+        q_a = (
+            q_df["A_1sig"]
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+
+        ax.hist(
+            lae_a,
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="LAE",
+            color="purple"
+        )
+
+        ax.hist(
+            sf_a,
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="SF",
+            color="blue"
+        )
+
+        ax.hist(
+            q_a,
+            bins=30,
+            density=True,
+            alpha=0.5,
+            label="Q",
+            color="red"
+        )
+
+        ax.set_xlabel("Asymmetry")
+        ax.set_ylabel("Density")
+        ax.legend()
+
+        st.pyplot(fig)
+
+
+with st.expander("📋 Database Statistics"):
+
+    stats_df = get_sample_statistics()
+
+    st.dataframe(
+        stats_df
+    )
 
 #ジャンプ検索
 jump_id = st.number_input(
@@ -732,43 +918,7 @@ if st.button("IDへジャンプ"):
             "そのIDは現在の一覧に存在しません"
         )
 
-    
 
-
-if sample_select == "LAE":
-
-    st.dataframe(
-    matched_df[
-        [
-            "ID",
-            "EW",
-            "logM",
-            "Re",
-            "Re_err",
-            "C_1sig/C_n2p5",
-            "C_err",
-            "A_1sig",
-            "A_err"
-        ]
-    ].head()
-    )
-
-else:
-
-    st.dataframe(
-    matched_df[
-        [
-            "ID",
-            "logM",
-            "Re",
-            "Re_err",
-            "C_1sig/C_n2p5",
-            "C_err",
-            "A_1sig",
-            "A_err"
-        ]
-    ].head()
-)
 
 
 if "selected_saved_id" in st.session_state:
@@ -896,200 +1046,774 @@ r80 : {galaxy["r80_lsig"]:.3f} ± {galaxy["err_r80_lsig"]:.3f}
 
 galaxy_id = int(galaxy["ID"])
 
+pred = prediction_df[
+    prediction_df["id"] == galaxy_id
+]
+
+ai_pred = None
+
+if len(pred) > 0:
+
+    ai_pred = pred.iloc[0]
+
+    scores = [
+        ai_pred["detectable"],
+        ai_pred["bright_neighbor"],
+        ai_pred["multiple_component"],
+        ai_pred["point_source"]
+    ]
+
+    distance = min(
+        abs(s - 0.5)
+        for s in scores
+    )
+
+    if distance < 0.10:
+
+        st.warning(
+            "⚠ AIが迷っている天体です（Uncertain Candidate）"
+        )
+
+pixel_galaxy = pixel_df[
+    pixel_df["ID"] == galaxy_id
+].iloc[0]
+
+# ----------------
+# Point Source補助
+# ----------------
+
+r50_pix = float(
+    pixel_galaxy["r50_lsig"]
+)
+
+r80_pix = float(
+    pixel_galaxy["r80_lsig"]
+)
+
+r50_arcsec = r50_pix * 0.03
+r80_arcsec = r80_pix * 0.03
+
+ratio = r80_pix / r50_pix
+
+st.sidebar.markdown("---")
+
+st.sidebar.subheader(
+    "Point Source補助"
+)
+
+st.sidebar.write(
+    f"r50 = {r50_pix:.2f} pix"
+)
+
+st.sidebar.write(
+    f"r50 = {r50_arcsec:.3f} arcsec"
+)
+
+st.sidebar.write(
+    f"r80 = {r80_pix:.2f} pix"
+)
+
+st.sidebar.write(
+    f"r80 = {r80_arcsec:.3f} arcsec"
+)
+
+st.sidebar.write(
+    f"r80/r50 = {ratio:.2f}"
+)
+
 history_df = get_history(galaxy_id)
 
-st.subheader("このIDの判定履歴")
-st.dataframe(history_df)
+previous = None
 
-target_file = None
+if len(history_df) > 0:
+    previous = history_df.iloc[0]
 
-for file in fits_files:
+
+
+f277w_file = None
+obj_file = None
+asy_file = None
+
+for file in glob.glob(
+    f277w_folder + r"\**\*.fits",
+    recursive=True
+):
 
     if f"id{galaxy_id}.fits" in file:
-        target_file = file
+
+        f277w_file = file
+
         break
 
-if target_file:
-    st.success("対応画像発見")
-    st.write(target_file)
+for file in glob.glob(
+    obj_folder + r"\**\*.fits",
+    recursive=True
+):
+
+    if f"id{galaxy_id}.fits" in file:
+
+        obj_file = file
+
+        break
+
+for file in glob.glob(
+    asy_folder + r"\**\*.fits",
+    recursive=True
+):
+
+    if f"id{galaxy_id}.fits" in file:
+
+        asy_file = file
+
+        break
+
+if (
+    f277w_file
+    and obj_file
+    and asy_file
+):
+
+    st.success(
+        "F277W / OBJ / ASY 発見"
+    )
 
 else:
-    st.error("画像が見つかりません")
+
+    st.error(
+        "画像が見つかりません"
+    )
+
 
 # FITS画像表示
 
-if target_file:
-
-    image_data = fits.getdata(target_file)
-
-    # 画像中心取得
-    center_y = image_data.shape[0] // 2
-    center_x = image_data.shape[1] // 2
+if (
+    f277w_file
+    and obj_file
+    and asy_file
+):
 
     zoom_size = st.slider(
-    "ズームサイズ",
-    min_value=30,
-    max_value=200,
-    value=100
+        "ズームサイズ",
+        min_value=30,
+        max_value=200,
+        value=100
     )
 
-    half = zoom_size // 2
-
-    crop = image_data[
-        center_y - half:center_y + half,
-        center_x - half:center_x + half
-    ]
-
-    default_vmax = np.percentile(
-        crop,
-        99
+    brightness_factor = st.slider(
+        "明るさ倍率",
+        min_value=0.1,
+        max_value=5.0,
+        value=1.0,
+        step=0.1
     )
 
+    col_img1, col_img2, col_img3 = st.columns(3)
 
-    #明るさスライダー（画像ごとに自動設定）
-    vmax = st.slider(
-        "明るさ",
-        min_value=float(default_vmax * 0.1),
-        max_value=float(default_vmax * 5),
-        value=float(default_vmax)
-    )
+    # ------------------
+    # F277W
+    # ------------------
+    with col_img1:
 
-    fig, ax = plt.subplots()
+        image_data = fits.getdata(f277w_file)
 
-    ax.imshow(
-        crop,
-        origin="lower",
-        cmap="gray",
-        vmax=vmax
-    )
+        center_y = image_data.shape[0] // 2
+        center_x = image_data.shape[1] // 2
 
-    ax.set_title(f"ID {galaxy_id}")
+        half = zoom_size // 2
 
-    st.pyplot(fig)
+        crop = image_data[
+            center_y-half:center_y+half,
+            center_x-half:center_x+half
+        ]
+
+        default_vmax = np.percentile(
+            crop,
+            99
+        )
+
+        vmax = (
+            default_vmax
+            * brightness_factor
+        )
+
+        fig, ax = plt.subplots()
+
+        ax.imshow(
+            crop,
+            origin="lower",
+            cmap="gray",
+            vmax=vmax
+        )
+
+        # 中心十字
+        ax.axhline(
+            crop.shape[0] / 2,
+            color="yellow",
+            lw=1
+        )
+
+        ax.axvline(
+            crop.shape[1] / 2,
+            color="yellow",
+            lw=1
+        )
+
+        #R50_円形
+        r50_pix = float(
+            pixel_galaxy["r50_lsig"]
+        )
+
+
+        circle50 = Circle(
+            (
+                crop.shape[1] / 2,
+                crop.shape[0] / 2
+            ),
+            r50_pix,
+            color="red",
+            fill=False,
+            lw=2
+        )
+
+        ax.add_patch(circle50)
+
+        #R80_円形
+        r80_pix = float(
+        pixel_galaxy["r80_lsig"]
+        )
+
+        circle80 = Circle(
+            (
+                crop.shape[1] / 2,
+                crop.shape[0] / 2
+            ),
+            r80_pix,
+            color="cyan",
+            fill=False,
+            lw=2
+        )
+
+        ax.add_patch(circle80)
+
+
+        ax.set_title("F277W")
+
+        st.pyplot(fig)
+
+    # ------------------
+    # OBJ
+    # ------------------
+    with col_img2:
+
+        image_data = fits.getdata(obj_file)
+
+        center_y = image_data.shape[0] // 2
+        center_x = image_data.shape[1] // 2
+
+        half = zoom_size // 2
+
+        crop = image_data[
+            center_y-half:center_y+half,
+            center_x-half:center_x+half
+        ]
+
+        default_vmax = np.percentile(
+            crop,
+            99
+        )
+
+        vmax = (
+            default_vmax
+            * brightness_factor
+        )
+
+        fig, ax = plt.subplots()
+
+        ax.imshow(
+            crop,
+            origin="lower",
+            cmap="gray",
+            vmax=vmax
+        )
+
+        # 中心十字
+        ax.axhline(
+            crop.shape[0] / 2,
+            color="yellow",
+            lw=1
+        )
+
+        ax.axvline(
+            crop.shape[1] / 2,
+            color="yellow",
+            lw=1
+        )
+
+        #R50_円形
+        r50_pix = float(
+            pixel_galaxy["r50_lsig"]
+        )
+
+        circle50 = Circle(
+            (
+                crop.shape[1] / 2,
+                crop.shape[0] / 2
+            ),
+            r50_pix,
+            color="red",
+            fill=False,
+            lw=2
+        )
+
+        ax.add_patch(circle50)
+
+        #R80_円形
+        r80_pix = float(
+        pixel_galaxy["r80_lsig"]
+        )
+
+        circle80 = Circle(
+            (
+                crop.shape[1] / 2,
+                crop.shape[0] / 2
+            ),
+            r80_pix,
+            color="cyan",
+            fill=False,
+            lw=2
+        )
+
+        ax.add_patch(circle80)
+
+        
+
+        ax.set_title("OBJ")
+
+        st.pyplot(fig)
+
+    # ------------------
+    # ASY
+    # ------------------
+    with col_img3:
+
+        image_data = fits.getdata(asy_file)
+
+        center_y = image_data.shape[0] // 2
+        center_x = image_data.shape[1] // 2
+
+        half = zoom_size // 2
+
+        crop = image_data[
+            center_y-half:center_y+half,
+            center_x-half:center_x+half
+        ]
+
+        default_vmax = np.percentile(
+            crop,
+            99
+        )
+
+        vmax = (
+            default_vmax
+            * brightness_factor
+        )
+
+        fig, ax = plt.subplots()
+
+        ax.imshow(
+            crop,
+            origin="lower",
+            cmap="gray",
+            vmax=vmax
+        )
+
+        # 中心十字
+        ax.axhline(
+            crop.shape[0] / 2,
+            color="yellow",
+            lw=1
+        )
+
+        ax.axvline(
+            crop.shape[1] / 2,
+            color="yellow",
+            lw=1
+        )
+
+        #R50_円形
+        r50_pix = float(
+            pixel_galaxy["r50_lsig"]
+        )
+
+        circle50 = Circle(
+            (
+                crop.shape[1] / 2,
+                crop.shape[0] / 2
+            ),
+            r50_pix,
+            color="red",
+            fill=False,
+            lw=2
+        )
+
+        ax.add_patch(circle50)
+
+        #R80_円形
+        r80_pix = float(
+        pixel_galaxy["r80_lsig"]
+        )
+
+        circle80 = Circle(
+            (
+                crop.shape[1] / 2,
+                crop.shape[0] / 2
+            ),
+            r80_pix,
+            color="cyan",
+            fill=False,
+            lw=2
+        )
+
+        ax.add_patch(circle80)
+
+        ax.set_title("ASY")
+
+        st.pyplot(fig)
+
+# --------------------
+# Human Label + AI Prediction
+# --------------------
+
+st.caption(
+    "左: 前回判定　中央: 今回判定　右: AI予測"
+)
+
+col_old, col_check, col_prob, col_bar = st.columns(
+    [1, 5, 1, 3]
+)
+
+with col_old:
+
+    if previous is not None:
+
+        st.write(
+            "✅"
+            if previous["detectable"]
+            else "⬜"
+        )
+
+    else:
+
+        st.write("－")
+
+with col_check:
+
     detectable = st.checkbox(
-    "Detectable（有意に検出されている）"
+        "Detectable（有意に検出されている）",
+        value=(
+            bool(previous["detectable"])
+            if previous is not None
+            else False
+        ),
+        key=f"detectable_{galaxy_id}"
     )
 
-    
-    
+with col_prob:
+
+    if ai_pred is not None:
+        st.write(
+            f"{ai_pred['detectable']:.1%}"
+        )
+
+with col_bar:
+
+    if ai_pred is not None:
+        st.progress(
+            float(ai_pred["detectable"])
+        )
+
+
+col_old, col_check, col_prob, col_bar = st.columns(
+    [1, 5, 1, 3]
+)
+
+with col_old:
+
+    if previous is not None:
+
+        st.write(
+            "✅"
+            if previous["bright_neighbor"]
+            else "⬜"
+        )
+
+    else:
+
+        st.write("－")
+
+with col_check:
+
     bright_neighbor = st.checkbox(
-    "Bright Neighbor（近傍の明るい天体の影響あり）"
+        "Bright Neighbor（近傍の明るい天体の影響あり）",
+        value=(
+            bool(previous["bright_neighbor"])
+            if previous is not None
+            else False
+        ),
+        key=f"bright_{galaxy_id}"
     )
 
-    
+with col_prob:
+
+    if ai_pred is not None:
+        st.write(
+            f"{ai_pred['bright_neighbor']:.1%}"
+        )
+
+with col_bar:
+
+    if ai_pred is not None:
+        st.progress(
+            float(ai_pred["bright_neighbor"])
+        )
+
+
+col_old, col_check, col_prob, col_bar = st.columns(
+    [1, 5, 1, 3]
+)
+
+with col_old:
+
+    if previous is not None:
+
+        st.write(
+            "✅"
+            if previous["multiple_component"]
+            else "⬜"
+        )
+
+    else:
+
+        st.write("－")
+
+with col_check:
 
     multiple_component = st.checkbox(
-    "Multiple Component（複数成分）"
+        "Multiple Component（複数成分）",
+        value=(
+            bool(previous["multiple_component"])
+            if previous is not None
+            else False
+        ),
+        key=f"multiple_{galaxy_id}"
     )
 
-    
+with col_prob:
+
+    if ai_pred is not None:
+        st.write(
+            f"{ai_pred['multiple_component']:.1%}"
+        )
+
+with col_bar:
+
+    if ai_pred is not None:
+        st.progress(
+            float(ai_pred["multiple_component"])
+        )
+
+
+col_old, col_check, col_prob, col_bar = st.columns(
+    [1, 5, 1, 3]
+)
+
+with col_old:
+
+    if previous is not None:
+
+        st.write(
+            "✅"
+            if previous["point_source"]
+            else "⬜"
+        )
+
+    else:
+
+        st.write("－")
+
+with col_check:
 
     point_source = st.checkbox(
-    "Point Source（点源）"
+        "Point Source（点源）",
+        value=(
+            bool(previous["point_source"])
+            if previous is not None
+            else False
+        ),
+        key=f"point_{galaxy_id}"
     )
 
-    
 
-    memo = st.text_area(
-    "Memo"
+with col_prob:
+
+    if ai_pred is not None:
+        st.write(
+            f"{ai_pred['point_source']:.1%}"
+        )
+
+with col_bar:
+
+    if ai_pred is not None:
+        st.progress(
+            float(ai_pred["point_source"])
+        )
+
+
+changed = True
+
+if previous is not None:
+
+    changed = (
+
+        int(previous["detectable"]) != int(detectable)
+
+        or
+
+        int(previous["bright_neighbor"]) != int(bright_neighbor)
+
+        or
+
+        int(previous["multiple_component"]) != int(multiple_component)
+
+        or
+
+        int(previous["point_source"]) != int(point_source)
+
     )
 
+    if changed:
 
+        st.warning(
+            "⚠ 前回判定から変更あり"
+        )
 
-    if "last_saved_id" in st.session_state:
+    else:
 
         st.success(
-        f"ID {st.session_state.last_saved_id} を保存しました"
+            "✅ 前回判定と一致"
         )
+
+st.info(
+    "AI予測確率（0〜100%）。バー長はモデルの予測確率を表し、判定の参考情報として利用してください。"
+)
+
+memo = st.text_area(
+    "Memo"
+)
+
+if "last_saved_id" in st.session_state:
+
+    st.success(
+        f"ID {st.session_state.last_saved_id} を保存しました"
+    )
 
 
 col1, col2 = st.columns(2)
 
 
-with col1:
+button_label = (
+    "更新保存"
+    if saved_mode
+    else "保存して次へ"
+)
 
-    if st.button("保存"):
+if st.button(button_label):
 
-        save_data = (
-            galaxy_id,
-            image_family,
-            sample_select,
+    changed = True
 
-            float(np.log10(galaxy["Ms_med"])),
+    if previous is not None:
 
-            float(galaxy["Re"]),
-            float(galaxy["Re_err"]),
+        changed = (
 
-            float(galaxy["C_1sig/C_n2p5"]),
-            float(galaxy["C_err"]),
+            int(previous["detectable"]) != int(detectable)
 
-            float(galaxy["A_1sig"]),
-            float(galaxy["A_err"]),
+            or
 
-            int(detectable),
-            int(bright_neighbor),
-            int(multiple_component),
-            int(point_source),
+            int(previous["bright_neighbor"]) != int(bright_neighbor)
 
-            memo
+            or
+
+            int(previous["multiple_component"]) != int(multiple_component)
+
+            or
+
+            int(previous["point_source"]) != int(point_source)
+
         )
+
+    save_data = (
+        galaxy_id,
+        "all",
+        sample_select,
+
+        float(np.log10(galaxy["Ms_med"])),
+
+        float(galaxy["Re"]),
+        float(galaxy["Re_err"]),
+
+        float(galaxy["C_1sig/C_n2p5"]),
+        float(galaxy["C_err"]),
+
+        float(galaxy["A_1sig"]),
+        float(galaxy["A_err"]),
+
+        int(detectable),
+        int(bright_neighbor),
+        int(multiple_component),
+        int(point_source),
+
+        memo
+    )
+
+    if changed:
 
         save_classification(save_data)
 
-        result = pd.DataFrame([{
-            "ID": galaxy_id,
-
-            "image_family": image_family,
-            "sample_select": sample_select,
-
-            "logM": np.log10(galaxy["Ms_med"]),
-
-            "Re": galaxy["Re"],
-            "Re_err": galaxy["Re_err"],
-
-            "C_1sig/C_n2p5":
-                galaxy["C_1sig/C_n2p5"],
-
-            "C_err": galaxy["C_err"],
-
-            "A_1sig": galaxy["A_1sig"],
-
-            "A_err": galaxy["A_err"],
-
-            "detectable": detectable,
-            "bright_neighbor": bright_neighbor,
-            "multiple_component": multiple_component,
-            "point_source": point_source,
-
-            "memo": memo
-        }])
-
-        
-
-
         st.session_state.last_saved_id = galaxy_id
+
         st.session_state.saved = True
-        st.success(f"ID {galaxy_id} を保存しました")
 
-       
+    else:
 
-if not saved_mode:
+        st.info(
+            "✅ 前回判定と同一のため保存をスキップしました"
+        )
 
-    with col2:
+    if saved_mode:
 
-        if st.button("次へ"):
+        if changed:
 
-            st.session_state.saved = False
+            st.success(
+                f"ID {galaxy_id} を更新しました"
+            )
 
-            if "last_saved_id" in st.session_state:
-                del st.session_state["last_saved_id"]
+    else:
 
-            if (
-                st.session_state.current_index
-                < len(matched_df) - 1
-            ):
+        if (
+            st.session_state.current_index
+            < len(matched_df) - 1
+        ):
 
-                st.session_state.current_index += 1
+            st.session_state.current_index += 1
 
-                st.rerun()
+            st.rerun()
 
+        else:
+
+            st.success(
+                "🎉 全ての天体の判定が完了しました！"
+            )
+
+            st.balloons()
+
+            st.stop()

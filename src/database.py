@@ -313,3 +313,41 @@ def get_sampled_galaxies(
     return sampled_df.reset_index(
         drop=True
     )
+
+def get_sample_counts():
+
+    conn = get_connection()
+
+    df = pd.read_sql(
+        """
+        SELECT
+            image_subset,
+            COUNT(*) AS n
+        FROM classification
+        GROUP BY image_subset
+        """,
+        conn
+    )
+
+    conn.close()
+
+    return df
+
+def get_classified_objects():
+
+    conn = get_connection()
+
+    df = pd.read_sql(
+        """
+        SELECT DISTINCT
+            id,
+            image_subset
+        FROM classification
+        ORDER BY image_subset, id
+        """,
+        conn
+    )
+
+    conn.close()
+
+    return df
